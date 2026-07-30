@@ -14,6 +14,7 @@ export function useFleetAgents(): {
   agents: FleetAgent[];
   isLoading: boolean;
   error: Error | null;
+  partialError: Error | null;
 } {
   const identityQuery = useIdentityQuery();
   const currentPubkey = identityQuery.data?.pubkey;
@@ -51,12 +52,17 @@ export function useFleetAgents(): {
     );
   }, [currentPubkey, managedAgents, profiles, relayAgents]);
 
+  const managedError =
+    managedAgentsQuery.error instanceof Error ? managedAgentsQuery.error : null;
+  const relayError =
+    relayAgentsQuery.error instanceof Error ? relayAgentsQuery.error : null;
+
   return {
     agents,
     isLoading: managedAgentsQuery.isLoading || relayAgentsQuery.isLoading,
-    error:
-      managedAgentsQuery.error instanceof Error
-        ? managedAgentsQuery.error
-        : null,
+    // Fatal only when both sources failed; a single failed source downgrades
+    // to partialError so the half that loaded still renders.
+    error: managedError && relayError ? managedError : null,
+    partialError: managedError ?? relayError,
   };
 }

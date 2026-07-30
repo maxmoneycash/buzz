@@ -26,7 +26,7 @@ import { displayTokenTotal } from "../turnMetrics";
 import { FleetAgentCard } from "./FleetAgentCard";
 
 export function FleetView() {
-  const { agents, error, isLoading } = useFleetAgents();
+  const { agents, error, isLoading, partialError } = useFleetAgents();
   const { openAgentActivity } = useOpenAgentActivity();
   const { goAgents } = useAppNavigation();
 
@@ -66,13 +66,24 @@ export function FleetView() {
         {isLoading ? (
           <FleetLoadingSkeleton />
         ) : error ? (
-          <p className="text-sm text-destructive">
+          <p
+            className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            data-testid="fleet-error"
+          >
             Could not load agents: {error.message}
           </p>
         ) : agents.length === 0 ? (
           <FleetEmptyState onOpenAgents={() => void goAgents()} />
         ) : (
           <>
+            {partialError ? (
+              <p
+                className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                data-testid="fleet-partial-warning"
+              >
+                Some agents may be missing: {partialError.message}
+              </p>
+            ) : null}
             <FleetSummary agents={agents} />
             <div
               className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
