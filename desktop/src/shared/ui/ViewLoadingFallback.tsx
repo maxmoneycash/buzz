@@ -7,6 +7,7 @@ import { TopChromeInsetHeader } from "@/shared/layout/TopChromeInsetHeader";
 type ViewLoadingFallbackKind =
   | "agents"
   | "channel"
+  | "fleet"
   | "forum"
   | "projects"
   | "pulse"
@@ -272,6 +273,41 @@ function AgentsLoadingBody() {
   );
 }
 
+function FleetLoadingBody() {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-7 sm:px-6 sm:py-8">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+        <div className="space-y-1.5">
+          <Skeleton className="h-6 w-32" />
+          <Skeleton className="h-4 w-72 max-w-full" />
+        </div>
+        <Skeleton className="h-10 w-full rounded-lg" />
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {["first", "second", "third"].map((card) => (
+            <div
+              className="flex flex-col gap-3 rounded-lg border border-border/70 p-4"
+              key={card}
+            >
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-9 w-9 rounded-full" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-4 w-28 rounded" />
+                  <Skeleton className="h-3 w-20 rounded" />
+                </div>
+              </div>
+              <Skeleton className="h-4 w-full rounded" />
+              <div className="flex items-center justify-between gap-2 border-t border-border/50 pt-2">
+                <Skeleton className="h-3 w-24 rounded" />
+                <Skeleton className="h-3 w-12 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CardListLoadingBody() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-4 pb-4 pt-4 sm:px-6">
@@ -401,6 +437,7 @@ export function ViewLoadingFallback({
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {shouldShowChannelHeader ? <LoadingHeaderSkeleton /> : null}
       {kind === "agents" ? <AgentsLoadingBody /> : null}
+      {kind === "fleet" ? <FleetLoadingBody /> : null}
       {kind === "workflows" ? <CardListLoadingBody /> : null}
       {kind === "projects" ? <CardListLoadingBody /> : null}
       {kind === "channel" ? (

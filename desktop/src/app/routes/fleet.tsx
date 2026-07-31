@@ -14,7 +14,7 @@ export const Route = createFileRoute("/fleet")({
 
 function FleetRouteComponent() {
   return (
-    <React.Suspense fallback={<ViewLoadingFallback kind="agents" />}>
+    <React.Suspense fallback={<ViewLoadingFallback kind="fleet" />}>
       <FleetScreen />
     </React.Suspense>
   );

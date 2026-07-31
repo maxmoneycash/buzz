@@ -236,7 +236,10 @@ function FleetLoadingSkeleton() {
             </div>
           </div>
           <Skeleton className="h-4 w-full rounded" />
-          <Skeleton className="h-3 w-2/3 rounded" />
+          <div className="flex items-center justify-between gap-2 border-t border-border/50 pt-2">
+            <Skeleton className="h-3 w-24 rounded" />
+            <Skeleton className="h-3 w-12 rounded" />
+          </div>
         </div>
       ))}
     </div>

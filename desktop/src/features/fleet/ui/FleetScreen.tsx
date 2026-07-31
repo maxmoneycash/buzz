@@ -10,7 +10,7 @@ const FleetView = React.lazy(async () => {
 export function FleetScreen() {
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <React.Suspense fallback={<ViewLoadingFallback kind="agents" />}>
+      <React.Suspense fallback={<ViewLoadingFallback kind="fleet" />}>
         <FleetView />
       </React.Suspense>
     </div>
