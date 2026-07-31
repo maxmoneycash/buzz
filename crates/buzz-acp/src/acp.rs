@@ -136,11 +136,21 @@ fn build_initialize_params() -> serde_json::Value {
 ///
 /// One `AcpClient` per agent process. Multiple sessions can be created on the
 /// same client via repeated calls to [`session_new`](AcpClient::session_new).
+struct PendingWrite {
+    bytes: Vec<u8>,
+    written: usize,
+    observer_value: serde_json::Value,
+}
+
 pub struct AcpClient {
     /// The agent child process (kept alive to prevent zombie).
     child: Child,
     /// Write end of the agent's stdin pipe.
     stdin: ChildStdin,
+    /// Partially written NDJSON line. Prompt futures may be cancelled while a
+    /// large line is crossing the pipe. The next write finishes this line
+    /// before it starts another one, preserving the framing boundary.
+    pending_write: Option<PendingWrite>,
     /// Framed reader over the agent's stdout pipe (line-oriented, bounded).
     /// Uses `LinesCodec::new_with_max_length` to enforce MAX_LINE_SIZE at the
     /// read level — prevents OOM from rogue agents writing infinite non-newline bytes.
@@ -537,6 +547,7 @@ impl AcpClient {
         Ok(Self {
             child,
             stdin,
+            pending_write: None,
             reader: FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_SIZE)),
             next_id: 0,
             pending_permission_id: None,
@@ -1024,23 +1035,67 @@ impl AcpClient {
         self.parse_stop_reason(&result)
     }
 
+    /// Finish the current NDJSON line, if any.
+    ///
+    /// `AsyncWriteExt::write` is cancellation safe. Progress is recorded after
+    /// every completed write, so a dropped prompt future can resume at the
+    /// exact byte boundary before a cancel notification is sent.
+    async fn drain_pending_write(&mut self) -> Result<Option<serde_json::Value>, AcpError> {
+        const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        loop {
+            let Some(pending) = self.pending_write.as_mut() else {
+                return Ok(None);
+            };
+            if pending.written < pending.bytes.len() {
+                let written = tokio::time::timeout(
+                    WRITE_TIMEOUT,
+                    self.stdin.write(&pending.bytes[pending.written..]),
+                )
+                .await
+                .map_err(|_| AcpError::WriteTimeout(WRITE_TIMEOUT))?
+                .map_err(AcpError::Io)?;
+                if written == 0 {
+                    return Err(AcpError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "agent stdin accepted zero bytes",
+                    )));
+                }
+                pending.written += written;
+                continue;
+            }
+
+            tokio::time::timeout(WRITE_TIMEOUT, self.stdin.flush())
+                .await
+                .map_err(|_| AcpError::WriteTimeout(WRITE_TIMEOUT))?
+                .map_err(AcpError::Io)?;
+            return Ok(self
+                .pending_write
+                .take()
+                .map(|completed| completed.observer_value));
+        }
+    }
+
     /// Serialize `value` as a single NDJSON line and flush to the agent's stdin.
     ///
     /// Bounded by a 30-second write timeout. If the agent stops reading stdin
     /// (e.g., it's stuck or dead), the write would otherwise block forever.
     async fn write_ndjson(&mut self, value: &serde_json::Value) -> Result<(), AcpError> {
-        const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        let line = serde_json::to_string(value)?;
-        tokio::time::timeout(WRITE_TIMEOUT, async {
-            self.stdin.write_all(line.as_bytes()).await?;
-            self.stdin.write_all(b"\n").await?;
-            self.stdin.flush().await?;
-            Ok::<(), std::io::Error>(())
-        })
-        .await
-        .map_err(|_| AcpError::WriteTimeout(WRITE_TIMEOUT))?
-        .map_err(AcpError::Io)?;
-        self.observe("acp_write", value.clone());
+        if let Some(completed) = self.drain_pending_write().await? {
+            self.observe("acp_write", completed);
+        }
+
+        let mut bytes = serde_json::to_vec(value)?;
+        bytes.push(b'\n');
+        self.pending_write = Some(PendingWrite {
+            bytes,
+            written: 0,
+            observer_value: value.clone(),
+        });
+        let completed = self
+            .drain_pending_write()
+            .await?
+            .expect("newly queued write must complete or return an error");
+        self.observe("acp_write", completed);
         Ok(())
     }
 
@@ -2850,6 +2905,76 @@ mod tests {
         AcpClient::spawn("bash", &["-c".into(), script.into()], &[], false)
             .await
             .expect("failed to spawn test script")
+    }
+
+    #[tokio::test]
+    async fn cancelled_large_write_preserves_ndjson_framing() {
+        let capture_path = std::env::temp_dir().join(format!(
+            "buzz-acp-cancelled-write-{}.ndjson",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            "python3 -c 'import sys,time; time.sleep(0.2); data=sys.stdin.buffer.readline()+sys.stdin.buffer.readline(); open(\"{}\",\"wb\").write(data)'",
+            capture_path.display()
+        );
+        let mut client = spawn_script(&script).await;
+        let prompt = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/prompt",
+            "params": {
+                "prompt": "x".repeat(2_000_000),
+            },
+        });
+        let interrupted = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            client.write_ndjson(&prompt),
+        )
+        .await;
+        assert!(
+            interrupted.is_err(),
+            "the large write should still be in flight"
+        );
+        assert!(
+            client.pending_write.is_some(),
+            "partial prompt bytes must remain available to resume"
+        );
+
+        let cancel = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": {
+                "sessionId": "session-under-test",
+            },
+        });
+        client
+            .write_ndjson(&cancel)
+            .await
+            .expect("resumed prompt and cancel should both write");
+
+        for _ in 0..100 {
+            if capture_path
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() > 0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let captured = std::fs::read_to_string(&capture_path).expect("captured NDJSON");
+        let lines = captured.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines.len(),
+            2,
+            "prompt and cancel must stay on separate lines"
+        );
+        let first: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("prompt remains valid JSON");
+        let second: serde_json::Value =
+            serde_json::from_str(lines[1]).expect("cancel remains valid JSON");
+        assert_eq!(first["method"], "session/prompt");
+        assert_eq!(second["method"], "session/cancel");
+        let _ = std::fs::remove_file(capture_path);
     }
 
     /// Spawn a probe script whose file name carries a runtime identity (e.g.
